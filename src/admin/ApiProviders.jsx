@@ -1,17 +1,19 @@
-import "./apiProviders.css";
-import { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   Activity,
+  AlertCircle,
   Check,
+  CheckCircle2,
   ChevronDown,
   Copy,
   Edit3,
-  Globe,
+  ExternalLink,
+  Globe2,
   KeyRound,
   MoreVertical,
   Plus,
   RefreshCw,
-  Save,
+  Search,
   Server,
   Settings2,
   ShieldCheck,
@@ -20,53 +22,58 @@ import {
   Zap,
 } from "lucide-react";
 
-import {
-  addProvider,
-  getProviders,
-  removeProvider,
-  resetProviders,
-  toggleProvider,
-  updateProvider,
-} from "../api/providers";
+const STORAGE_KEY = "movieverse_api_providers";
 
-const EMPTY_FORM = {
+const defaultForm = {
   name: "",
-  type: "metadata",
+  type: "REST API",
   baseUrl: "",
   apiKey: "",
   method: "GET",
-  enabled: true,
   priority: 1,
+  enabled: true,
+  primary: false,
   headers: "",
   params: "",
+  description: "",
 };
 
-const TYPE_OPTIONS = [
+const starterProviders = [
   {
-    value: "metadata",
-    label: "Metadata API",
+    id: "tmdb",
+    name: "TMDB",
+    type: "REST API",
+    baseUrl: "https://api.themoviedb.org/3",
+    apiKey: "",
+    method: "GET",
+    priority: 1,
+    enabled: true,
+    primary: true,
+    headers: "",
+    params: "language=en-US",
+    description: "Movie and TV metadata provider",
+    status: "unknown",
+    lastTested: null,
   },
   {
-    value: "search",
-    label: "Search API",
-  },
-  {
-    value: "image",
-    label: "Image API",
-  },
-  {
-    value: "catalog",
-    label: "Catalog API",
-  },
-  {
-    value: "custom",
-    label: "Custom API",
+    id: "omdb",
+    name: "OMDb",
+    type: "REST API",
+    baseUrl: "https://www.omdbapi.com/",
+    apiKey: "",
+    method: "GET",
+    priority: 2,
+    enabled: false,
+    primary: false,
+    headers: "",
+    params: "",
+    description: "Movie information provider",
+    status: "unknown",
+    lastTested: null,
   },
 ];
 
-function safeJsonParse(value, fallback = {}) {
-  if (!value?.trim()) return fallback;
-
+function safeParse(value, fallback) {
   try {
     return JSON.parse(value);
   } catch {
@@ -74,720 +81,904 @@ function safeJsonParse(value, fallback = {}) {
   }
 }
 
+function getInitialProviders() {
+  if (typeof window === "undefined") return starterProviders;
+
+  const saved = localStorage.getItem(STORAGE_KEY);
+
+  if (!saved) {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(starterProviders));
+    return starterProviders;
+  }
+
+  const parsed = safeParse(saved, starterProviders);
+
+  return Array.isArray(parsed) ? parsed : starterProviders;
+}
+
+function makeId() {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+function maskKey(key) {
+  if (!key) return "Not configured";
+  if (key.length <= 8) return "••••••••";
+  return `${key.slice(0, 4)}••••••••${key.slice(-4)}`;
+}
+
+function parseLines(value) {
+  return value
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .reduce((result, line) => {
+      const separator = line.indexOf(":");
+
+      if (separator === -1) return result;
+
+      const key = line.slice(0, separator).trim();
+      const val = line.slice(separator + 1).trim();
+
+      if (key) result[key] = val;
+
+      return result;
+    }, {});
+}
+
 export default function ApiProviders() {
-  const [providers, setProviders] = useState(() =>
-    getProviders()
-  );
-
+  const [providers, setProviders] = useState(getInitialProviders);
   const [showModal, setShowModal] = useState(false);
+  const [showMenu, setShowMenu] = useState(null);
   const [editingId, setEditingId] = useState(null);
-
-  const [form, setForm] = useState(EMPTY_FORM);
-
+  const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState("all");
   const [testingId, setTestingId] = useState(null);
-  const [testResults, setTestResults] = useState({});
+  const [testMessage, setTestMessage] = useState({});
+  const [copiedId, setCopiedId] = useState(null);
 
-  const [menuId, setMenuId] = useState(null);
+  const [form, setForm] = useState(defaultForm);
 
-  const activeCount = useMemo(
-    () =>
-      providers.filter(
-        (provider) => provider.enabled !== false
-      ).length,
-    [providers]
-  );
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(providers));
+  }, [providers]);
 
-  const refresh = () => {
-    setProviders([...getProviders()]);
-  };
+  const filteredProviders = useMemo(() => {
+    return providers.filter((provider) => {
+      const matchesSearch =
+        provider.name.toLowerCase().includes(search.toLowerCase()) ||
+        provider.baseUrl.toLowerCase().includes(search.toLowerCase()) ||
+        provider.type.toLowerCase().includes(search.toLowerCase());
 
-  const openAdd = () => {
-    setEditingId(null);
+      const matchesFilter =
+        filter === "all" ||
+        (filter === "enabled" && provider.enabled) ||
+        (filter === "disabled" && !provider.enabled) ||
+        (filter === "primary" && provider.primary);
 
-    setForm({
-      ...EMPTY_FORM,
-      priority: providers.length + 1,
+      return matchesSearch && matchesFilter;
     });
+  }, [providers, search, filter]);
 
+  const stats = useMemo(() => {
+    const enabled = providers.filter((p) => p.enabled).length;
+    const primary = providers.filter((p) => p.primary).length;
+    const healthy = providers.filter((p) => p.status === "online").length;
+
+    return {
+      total: providers.length,
+      enabled,
+      primary,
+      healthy,
+    };
+  }, [providers]);
+
+  function openAdd() {
+    setEditingId(null);
+    setForm(defaultForm);
     setShowModal(true);
-  };
+  }
 
-  const openEdit = (provider) => {
+  function openEdit(provider) {
     setEditingId(provider.id);
-
     setForm({
       name: provider.name || "",
-      type: provider.type || "metadata",
+      type: provider.type || "REST API",
       baseUrl: provider.baseUrl || "",
       apiKey: provider.apiKey || "",
       method: provider.method || "GET",
-      enabled: provider.enabled !== false,
       priority: provider.priority || 1,
-      headers: provider.headers
-        ? JSON.stringify(provider.headers, null, 2)
-        : "",
-      params: provider.params
-        ? JSON.stringify(provider.params, null, 2)
-        : "",
+      enabled: provider.enabled ?? true,
+      primary: provider.primary ?? false,
+      headers: provider.headers || "",
+      params: provider.params || "",
+      description: provider.description || "",
     });
-
     setShowModal(true);
-    setMenuId(null);
-  };
+    setShowMenu(null);
+  }
 
-  const closeModal = () => {
+  function closeModal() {
     setShowModal(false);
     setEditingId(null);
-    setForm(EMPTY_FORM);
-  };
+    setForm(defaultForm);
+  }
 
-  const handleChange = (event) => {
-    const { name, value, type, checked } =
-      event.target;
-
+  function updateForm(field, value) {
     setForm((current) => ({
       ...current,
-      [name]:
-        type === "checkbox"
-          ? checked
-          : value,
+      [field]: value,
     }));
-  };
+  }
 
-  const saveProvider = (event) => {
+  function saveProvider(event) {
     event.preventDefault();
 
-    if (!form.name.trim()) {
-      alert("Provider name is required.");
+    if (!form.name.trim() || !form.baseUrl.trim()) {
+      alert("API Name and Base URL are required.");
       return;
     }
-
-    if (!form.baseUrl.trim()) {
-      alert("API Base URL is required.");
-      return;
-    }
-
-    const providerData = {
-      name: form.name.trim(),
-      type: form.type,
-      baseUrl: form.baseUrl.trim(),
-      apiKey: form.apiKey.trim(),
-      method: form.method,
-      enabled: form.enabled,
-      priority: Number(form.priority) || 1,
-      headers: safeJsonParse(form.headers),
-      params: safeJsonParse(form.params),
-    };
 
     if (editingId) {
-      updateProvider(
-        editingId,
-        providerData
+      setProviders((current) =>
+        current.map((provider) =>
+          provider.id === editingId
+            ? {
+                ...provider,
+                ...form,
+                name: form.name.trim(),
+                baseUrl: form.baseUrl.trim(),
+              }
+            : provider
+        )
       );
     } else {
-      addProvider(providerData);
-    }
-
-    refresh();
-    closeModal();
-  };
-
-  const handleToggle = (id) => {
-    toggleProvider(id);
-    refresh();
-  };
-
-  const handleDelete = (id) => {
-    const provider = providers.find(
-      (item) => item.id === id
-    );
-
-    if (
-      !window.confirm(
-        `Delete "${provider?.name || "this provider"}"?`
-      )
-    ) {
-      return;
-    }
-
-    removeProvider(id);
-    refresh();
-    setMenuId(null);
-  };
-
-  const handleDuplicate = (provider) => {
-    addProvider({
-      ...provider,
-      id: undefined,
-      name: `${provider.name} Copy`,
-      priority: providers.length + 1,
-    });
-
-    refresh();
-    setMenuId(null);
-  };
-
-  const handleReset = () => {
-    if (
-      !window.confirm(
-        "Reset API providers to default settings?"
-      )
-    ) {
-      return;
-    }
-
-    resetProviders();
-    refresh();
-  };
-
-  const testProvider = async (provider) => {
-    if (!provider.baseUrl) {
-      setTestResults((current) => ({
-        ...current,
-        [provider.id]: {
-          ok: false,
-          message: "No API URL configured.",
-        },
-      }));
-
-      return;
-    }
-
-    setTestingId(provider.id);
-
-    try {
-      const headers = {
-        Accept: "application/json",
-        ...(provider.headers || {}),
+      const newProvider = {
+        id: makeId(),
+        ...form,
+        name: form.name.trim(),
+        baseUrl: form.baseUrl.trim(),
+        status: "unknown",
+        lastTested: null,
       };
 
-      const response = await fetch(
-        provider.baseUrl,
-        {
-          method: provider.method || "GET",
-          headers,
-        }
+      setProviders((current) => [...current, newProvider]);
+    }
+
+    if (form.primary) {
+      setProviders((current) =>
+        current.map((provider) => ({
+          ...provider,
+          primary:
+            editingId && provider.id === editingId
+              ? true
+              : !editingId && provider.id === provider.id
+                ? provider.primary
+                : false,
+        }))
+      );
+    }
+
+    closeModal();
+  }
+
+  function toggleProvider(id) {
+    setProviders((current) =>
+      current.map((provider) =>
+        provider.id === id
+          ? { ...provider, enabled: !provider.enabled }
+          : provider
+      )
+    );
+    setShowMenu(null);
+  }
+
+  function setPrimary(id) {
+    setProviders((current) =>
+      current.map((provider) => ({
+        ...provider,
+        primary: provider.id === id,
+      }))
+    );
+    setShowMenu(null);
+  }
+
+  function deleteProvider(id) {
+    const provider = providers.find((item) => item.id === id);
+
+    if (!provider) return;
+
+    const confirmed = window.confirm(
+      `Delete "${provider.name}" API provider?`
+    );
+
+    if (!confirmed) return;
+
+    setProviders((current) => current.filter((item) => item.id !== id));
+    setShowMenu(null);
+  }
+
+  async function testProvider(provider) {
+    if (!provider.baseUrl) return;
+
+    setTestingId(provider.id);
+    setTestMessage((current) => ({
+      ...current,
+      [provider.id]: null,
+    }));
+
+    try {
+      const url = new URL(provider.baseUrl);
+
+      const params = new URLSearchParams(provider.params || "");
+
+      if (provider.apiKey && !params.has("apikey") && !params.has("api_key")) {
+        params.set("apikey", provider.apiKey);
+      }
+
+      const headers = parseLines(provider.headers || "");
+
+      const requestUrl =
+        provider.method === "GET" && params.toString()
+          ? `${url.toString()}${url.search ? "&" : "?"}${params.toString()}`
+          : url.toString();
+
+      const response = await fetch(requestUrl, {
+        method: provider.method || "GET",
+        headers,
+        ...(provider.method !== "GET"
+          ? {
+              body:
+                provider.params && provider.params.trim()
+                  ? provider.params
+                  : undefined,
+            }
+          : {}),
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      setProviders((current) =>
+        current.map((item) =>
+          item.id === provider.id
+            ? {
+                ...item,
+                status: "online",
+                lastTested: new Date().toISOString(),
+              }
+            : item
+        )
       );
 
-      setTestResults((current) => ({
+      setTestMessage((current) => ({
         ...current,
         [provider.id]: {
-          ok: response.ok,
-          message: response.ok
-            ? `Connected · HTTP ${response.status}`
-            : `HTTP ${response.status}`,
+          type: "success",
+          text: `Connection successful • HTTP ${response.status}`,
         },
       }));
     } catch (error) {
-      setTestResults((current) => ({
+      setProviders((current) =>
+        current.map((item) =>
+          item.id === provider.id
+            ? {
+                ...item,
+                status: "offline",
+                lastTested: new Date().toISOString(),
+              }
+            : item
+        )
+      );
+
+      setTestMessage((current) => ({
         ...current,
         [provider.id]: {
-          ok: false,
-          message:
+          type: "error",
+          text:
             error?.message ||
-            "Connection failed",
+            "Connection failed. Provider may block browser CORS requests.",
         },
       }));
     } finally {
       setTestingId(null);
     }
-  };
+  }
+
+  async function copyProvider(provider) {
+    try {
+      await navigator.clipboard.writeText(provider.baseUrl);
+      setCopiedId(provider.id);
+
+      setTimeout(() => {
+        setCopiedId(null);
+      }, 1500);
+    } catch {
+      // Clipboard may be unavailable in some browsers.
+    }
+  }
+
+  function resetProviders() {
+    const confirmed = window.confirm(
+      "Reset API providers to the default configuration?"
+    );
+
+    if (!confirmed) return;
+
+    setProviders(starterProviders);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(starterProviders));
+  }
 
   return (
-    <div className="admin-providers-page">
-      <div className="admin-page-header">
-        <div>
-          <div className="admin-breadcrumb">
-            <span>Admin</span>
-            <ChevronDown size={13} />
-            <strong>API Providers</strong>
+    <div className="api-page">
+      <div className="api-background" />
+
+      <div className="api-container">
+        <header className="api-header">
+          <div>
+            <div className="api-eyebrow">
+              <span className="api-eyebrow-dot" />
+              SYSTEM / API INFRASTRUCTURE
+            </div>
+
+            <h1>API Providers</h1>
+
+            <p>
+              Manage metadata providers, fallback sources and external API
+              connections from one centralized control panel.
+            </p>
           </div>
 
-          <h1>API Providers</h1>
+          <div className="api-header-actions">
+            <button
+              className="api-secondary-button"
+              onClick={resetProviders}
+              type="button"
+            >
+              <RefreshCw size={17} />
+              Reset
+            </button>
 
-          <p>
-            Manage metadata, search, image and custom
-            API integrations from one place.
-          </p>
-        </div>
+            <button
+              className="api-primary-button"
+              onClick={openAdd}
+              type="button"
+            >
+              <Plus size={18} />
+              Add Provider
+            </button>
+          </div>
+        </header>
 
-        <div className="admin-header-actions">
-          <button
-            className="admin-btn admin-btn-secondary"
-            onClick={handleReset}
-          >
-            <RefreshCw size={17} />
-            Reset
-          </button>
+        <section className="api-stat-grid">
+          <StatCard
+            icon={<Server size={19} />}
+            label="Total Providers"
+            value={stats.total}
+            detail="Configured sources"
+          />
 
-          <button
-            className="admin-btn admin-btn-primary"
-            onClick={openAdd}
-          >
-            <Plus size={18} />
-            Add Provider
-          </button>
-        </div>
-      </div>
+          <StatCard
+            icon={<Zap size={19} />}
+            label="Active Providers"
+            value={stats.enabled}
+            detail="Currently enabled"
+          />
 
-      <div className="provider-stats">
-        <StatCard
-          icon={<Server size={20} />}
-          label="Total Providers"
-          value={providers.length}
-        />
+          <StatCard
+            icon={<ShieldCheck size={19} />}
+            label="Healthy"
+            value={stats.healthy}
+            detail="Successful tests"
+          />
 
-        <StatCard
-          icon={<Activity size={20} />}
-          label="Active Providers"
-          value={activeCount}
-        />
+          <StatCard
+            icon={<Globe2 size={19} />}
+            label="Primary"
+            value={stats.primary}
+            detail="Main data source"
+          />
+        </section>
 
-        <StatCard
-          icon={<Zap size={20} />}
-          label="Priority Routing"
-          value="Enabled"
-        />
+        <section className="api-toolbar">
+          <div className="api-search">
+            <Search size={18} />
+            <input
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Search providers..."
+            />
+          </div>
 
-        <StatCard
-          icon={<ShieldCheck size={20} />}
-          label="Connection"
-          value="Ready"
-        />
-      </div>
-
-      <div className="provider-toolbar">
-        <div>
-          <h2>Configured Providers</h2>
-          <p>
-            Enable or disable providers without
-            removing their configuration.
-          </p>
-        </div>
-
-        <button
-          className="provider-refresh"
-          onClick={refresh}
-          title="Refresh"
-        >
-          <RefreshCw size={17} />
-        </button>
-      </div>
-
-      {providers.length === 0 ? (
-        <div className="provider-empty">
-          <Server size={42} />
-
-          <h3>No API providers</h3>
-
-          <p>
-            Add your first API provider to start
-            connecting external data sources.
-          </p>
-
-          <button
-            className="admin-btn admin-btn-primary"
-            onClick={openAdd}
-          >
-            <Plus size={17} />
-            Add Provider
-          </button>
-        </div>
-      ) : (
-        <div className="provider-list">
-          {providers.map((provider) => {
-            const result =
-              testResults[provider.id];
-
-            return (
-              <div
-                className={`provider-card ${
-                  provider.enabled === false
-                    ? "provider-disabled"
-                    : ""
-                }`}
-                key={provider.id}
+          <div className="api-filters">
+            {[
+              ["all", "All"],
+              ["enabled", "Enabled"],
+              ["disabled", "Disabled"],
+              ["primary", "Primary"],
+            ].map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                className={filter === value ? "active" : ""}
+                onClick={() => setFilter(value)}
               >
-                <div className="provider-icon">
-                  <Globe size={22} />
-                </div>
+                {label}
+              </button>
+            ))}
+          </div>
+        </section>
 
-                <div className="provider-main">
-                  <div className="provider-title-row">
-                    <div>
-                      <h3>{provider.name}</h3>
+        <section className="api-content">
+          <div className="api-content-heading">
+            <div>
+              <h2>Provider Registry</h2>
+              <p>
+                {filteredProviders.length} provider
+                {filteredProviders.length !== 1 ? "s" : ""} available
+              </p>
+            </div>
 
-                      <div className="provider-meta">
-                        <span>
-                          {provider.type ||
-                            "custom"}
-                        </span>
+            <div className="api-secure-status">
+              <ShieldCheck size={16} />
+              Configuration stored locally
+            </div>
+          </div>
 
-                        <span>•</span>
+          {filteredProviders.length === 0 ? (
+            <div className="api-empty">
+              <div className="api-empty-icon">
+                <Server size={28} />
+              </div>
 
-                        <span>
-                          Priority{" "}
-                          {provider.priority ??
-                            "—"}
+              <h3>No providers found</h3>
+
+              <p>
+                Add your first API provider or change the current search
+                filters.
+              </p>
+
+              <button
+                className="api-primary-button"
+                onClick={openAdd}
+                type="button"
+              >
+                <Plus size={17} />
+                Add Provider
+              </button>
+            </div>
+          ) : (
+            <div className="api-provider-list">
+              {filteredProviders.map((provider) => (
+                <article className="api-provider-card" key={provider.id}>
+                  <div className="api-provider-main">
+                    <div className="api-provider-logo">
+                      <Server size={22} />
+                    </div>
+
+                    <div className="api-provider-info">
+                      <div className="api-provider-title">
+                        <h3>{provider.name}</h3>
+
+                        {provider.primary && (
+                          <span className="api-badge primary">
+                            <Zap size={12} />
+                            Primary
+                          </span>
+                        )}
+
+                        <span
+                          className={`api-badge ${
+                            provider.enabled ? "enabled" : "disabled"
+                          }`}
+                        >
+                          {provider.enabled ? "Enabled" : "Disabled"}
                         </span>
                       </div>
-                    </div>
 
-                    <StatusBadge
-                      enabled={
-                        provider.enabled !==
-                        false
-                      }
-                    />
-                  </div>
+                      <div className="api-provider-url">
+                        <Globe2 size={14} />
+                        <span>{provider.baseUrl}</span>
 
-                  <div className="provider-url">
-                    <span>
-                      {provider.method ||
-                        "GET"}
-                    </span>
+                        <button
+                          type="button"
+                          title="Copy URL"
+                          onClick={() => copyProvider(provider)}
+                        >
+                          {copiedId === provider.id ? (
+                            <Check size={14} />
+                          ) : (
+                            <Copy size={14} />
+                          )}
+                        </button>
 
-                    <code>
-                      {provider.baseUrl ||
-                        "No endpoint configured"}
-                    </code>
-                  </div>
+                        <a
+                          href={provider.baseUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          title="Open provider"
+                        >
+                          <ExternalLink size={14} />
+                        </a>
+                      </div>
 
-                  {result && (
-                    <div
-                      className={`provider-test-result ${
-                        result.ok
-                          ? "success"
-                          : "failed"
-                      }`}
-                    >
-                      {result.ok ? (
-                        <Check size={15} />
-                      ) : (
-                        <X size={15} />
+                      {provider.description && (
+                        <p className="api-provider-description">
+                          {provider.description}
+                        </p>
                       )}
-
-                      {result.message}
                     </div>
-                  )}
-                </div>
+                  </div>
 
-                <div className="provider-actions">
-                  <button
-                    className="test-btn"
-                    onClick={() =>
-                      testProvider(provider)
-                    }
-                    disabled={
-                      testingId ===
-                      provider.id
-                    }
-                  >
-                    {testingId ===
-                    provider.id ? (
-                      <RefreshCw
-                        size={15}
-                        className="spin"
-                      />
-                    ) : (
-                      <Activity size={15} />
+                  <div className="api-provider-meta">
+                    <div className="api-meta-item">
+                      <span>TYPE</span>
+                      <strong>{provider.type}</strong>
+                    </div>
+
+                    <div className="api-meta-item">
+                      <span>METHOD</span>
+                      <strong>{provider.method}</strong>
+                    </div>
+
+                    <div className="api-meta-item">
+                      <span>PRIORITY</span>
+                      <strong>#{provider.priority}</strong>
+                    </div>
+
+                    <div className="api-meta-item">
+                      <span>API KEY</span>
+                      <strong>
+                        <KeyRound size={13} />
+                        {maskKey(provider.apiKey)}
+                      </strong>
+                    </div>
+                  </div>
+
+                  <div className="api-provider-actions">
+                    {testMessage[provider.id] && (
+                      <div
+                        className={`api-test-message ${testMessage[provider.id].type}`}
+                      >
+                        {testMessage[provider.id].type === "success" ? (
+                          <CheckCircle2 size={15} />
+                        ) : (
+                          <AlertCircle size={15} />
+                        )}
+
+                        <span>{testMessage[provider.id].text}</span>
+                      </div>
                     )}
 
-                    Test
-                  </button>
-
-                  <button
-                    className={`toggle ${
-                      provider.enabled !==
-                      false
-                        ? "on"
-                        : ""
-                    }`}
-                    onClick={() =>
-                      handleToggle(
-                        provider.id
-                      )
-                    }
-                    aria-label="Toggle provider"
-                  >
-                    <span />
-                  </button>
-
-                  <div className="provider-menu">
                     <button
-                      className="more-btn"
-                      onClick={() =>
-                        setMenuId(
-                          menuId ===
-                            provider.id
-                            ? null
-                            : provider.id
-                        )
-                      }
+                      className="api-test-button"
+                      type="button"
+                      disabled={testingId === provider.id}
+                      onClick={() => testProvider(provider)}
                     >
-                      <MoreVertical
-                        size={18}
-                      />
+                      {testingId === provider.id ? (
+                        <>
+                          <RefreshCw className="api-spin" size={16} />
+                          Testing...
+                        </>
+                      ) : (
+                        <>
+                          <Activity size={16} />
+                          Test Connection
+                        </>
+                      )}
                     </button>
 
-                    {menuId ===
-                      provider.id && (
-                      <div className="dropdown-menu">
-                        <button
-                          onClick={() =>
-                            openEdit(
-                              provider
-                            )
-                          }
-                        >
-                          <Edit3 size={15} />
-                          Edit
-                        </button>
+                    <div className="api-menu-wrap">
+                      <button
+                        className="api-icon-button"
+                        type="button"
+                        onClick={() =>
+                          setShowMenu(
+                            showMenu === provider.id ? null : provider.id
+                          )
+                        }
+                      >
+                        <MoreVertical size={18} />
+                      </button>
 
-                        <button
-                          onClick={() =>
-                            handleDuplicate(
-                              provider
-                            )
-                          }
-                        >
-                          <Copy size={15} />
-                          Duplicate
-                        </button>
+                      {showMenu === provider.id && (
+                        <div className="api-dropdown">
+                          <button
+                            type="button"
+                            onClick={() => openEdit(provider)}
+                          >
+                            <Edit3 size={15} />
+                            Edit Provider
+                          </button>
 
-                        <button
-                          className="danger"
-                          onClick={() =>
-                            handleDelete(
-                              provider.id
-                            )
-                          }
-                        >
-                          <Trash2
-                            size={15}
-                          />
-                          Delete
-                        </button>
-                      </div>
-                    )}
+                          <button
+                            type="button"
+                            onClick={() => toggleProvider(provider.id)}
+                          >
+                            {provider.enabled ? (
+                              <>
+                                <X size={15} />
+                                Disable Provider
+                              </>
+                            ) : (
+                              <>
+                                <Check size={15} />
+                                Enable Provider
+                              </>
+                            )}
+                          </button>
+
+                          {!provider.primary && (
+                            <button
+                              type="button"
+                              onClick={() => setPrimary(provider.id)}
+                            >
+                              <Zap size={15} />
+                              Make Primary
+                            </button>
+                          )}
+
+                          <button
+                            className="danger"
+                            type="button"
+                            onClick={() => deleteProvider(provider.id)}
+                          >
+                            <Trash2 size={15} />
+                            Delete Provider
+                          </button>
+                        </div>
+                      )}
+                    </div>
                   </div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
+                </article>
+              ))}
+            </div>
+          )}
+        </section>
+      </div>
 
       {showModal && (
-        <div
-          className="modal-overlay"
-          onMouseDown={(event) => {
-            if (
-              event.target ===
-              event.currentTarget
-            ) {
-              closeModal();
-            }
-          }}
-        >
-          <div className="provider-modal">
-            <div className="modal-header">
+        <div className="api-modal-backdrop" onMouseDown={closeModal}>
+          <div
+            className="api-modal"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="api-modal-header">
               <div>
-                <h2>
-                  {editingId
-                    ? "Edit Provider"
-                    : "Add API Provider"}
-                </h2>
+                <div className="api-modal-icon">
+                  <Settings2 size={20} />
+                </div>
+
+                <h2>{editingId ? "Edit Provider" : "Add API Provider"}</h2>
 
                 <p>
-                  Configure an external API
-                  endpoint.
+                  Configure an external data source for your MovieVerse
+                  application.
                 </p>
               </div>
 
               <button
-                className="modal-close"
+                className="api-close-button"
+                type="button"
                 onClick={closeModal}
               >
-                <X size={19} />
+                <X size={20} />
               </button>
             </div>
 
-            <form onSubmit={saveProvider}>
-              <div className="form-grid">
-                <FormField
-                  label="Provider Name"
-                  name="name"
-                  value={form.name}
-                  onChange={handleChange}
-                  placeholder="Example: TMDB"
-                  icon={<Server size={16} />}
-                />
-
-                <div className="form-field">
-                  <label>Provider Type</label>
-
-                  <select
-                    name="type"
-                    value={form.type}
-                    onChange={handleChange}
-                  >
-                    {TYPE_OPTIONS.map(
-                      (option) => (
-                        <option
-                          value={
-                            option.value
-                          }
-                          key={
-                            option.value
-                          }
-                        >
-                          {option.label}
-                        </option>
-                      )
-                    )}
-                  </select>
+            <form className="api-form" onSubmit={saveProvider}>
+              <div className="api-form-section">
+                <div className="api-form-section-title">
+                  <span>01</span>
+                  Provider Identity
                 </div>
 
-                <FormField
-                  label="API Base URL"
-                  name="baseUrl"
-                  value={form.baseUrl}
-                  onChange={handleChange}
-                  placeholder="https://api.example.com"
-                  icon={<Globe size={16} />}
-                  full
-                />
-
-                <FormField
-                  label="API Key"
-                  name="apiKey"
-                  type="password"
-                  value={form.apiKey}
-                  onChange={handleChange}
-                  placeholder="Optional"
-                  icon={
-                    <KeyRound size={16} />
-                  }
-                />
-
-                <div className="form-field">
-                  <label>HTTP Method</label>
-
-                  <select
-                    name="method"
-                    value={form.method}
-                    onChange={handleChange}
-                  >
-                    <option value="GET">
-                      GET
-                    </option>
-
-                    <option value="POST">
-                      POST
-                    </option>
-                  </select>
-                </div>
-
-                <FormField
-                  label="Priority"
-                  name="priority"
-                  type="number"
-                  value={form.priority}
-                  onChange={handleChange}
-                  min="1"
-                  icon={
-                    <Settings2
-                      size={16}
+                <div className="api-form-grid two">
+                  <FormField label="API Name" required>
+                    <input
+                      value={form.name}
+                      onChange={(event) =>
+                        updateForm("name", event.target.value)
+                      }
+                      placeholder="e.g. TMDB"
                     />
-                  }
-                />
+                  </FormField>
 
-                <div className="form-field form-full">
-                  <label>
-                    Custom Headers
-                  </label>
+                  <FormField label="API Type">
+                    <div className="api-select">
+                      <select
+                        value={form.type}
+                        onChange={(event) =>
+                          updateForm("type", event.target.value)
+                        }
+                      >
+                        <option>REST API</option>
+                        <option>GraphQL</option>
+                        <option>JSON API</option>
+                        <option>XML API</option>
+                        <option>Custom</option>
+                      </select>
 
-                  <textarea
-                    name="headers"
-                    value={form.headers}
-                    onChange={handleChange}
-                    placeholder={`{
-  "Authorization": "Bearer YOUR_TOKEN"
-}`}
-                    rows={5}
-                  />
-
-                  <small>
-                    JSON object. Optional.
-                  </small>
+                      <ChevronDown size={16} />
+                    </div>
+                  </FormField>
                 </div>
 
-                <div className="form-field form-full">
-                  <label>
-                    Query Parameters
-                  </label>
+                <FormField label="Base URL" required>
+                  <div className="api-input-with-icon">
+                    <Globe2 size={17} />
+                    <input
+                      value={form.baseUrl}
+                      onChange={(event) =>
+                        updateForm("baseUrl", event.target.value)
+                      }
+                      placeholder="https://api.example.com/v1"
+                    />
+                  </div>
+                </FormField>
 
-                  <textarea
-                    name="params"
-                    value={form.params}
-                    onChange={handleChange}
-                    placeholder={`{
-  "language": "en-US"
-}`}
-                    rows={5}
-                  />
-
-                  <small>
-                    JSON object. Optional.
-                  </small>
-                </div>
-
-                <label className="enable-option">
+                <FormField label="Description">
                   <input
-                    type="checkbox"
-                    name="enabled"
-                    checked={form.enabled}
-                    onChange={handleChange}
+                    value={form.description}
+                    onChange={(event) =>
+                      updateForm("description", event.target.value)
+                    }
+                    placeholder="Short description of this provider"
                   />
-
-                  <span className="custom-checkbox">
-                    {form.enabled && (
-                      <Check size={13} />
-                    )}
-                  </span>
-
-                  <span>
-                    <strong>
-                      Enable provider
-                    </strong>
-
-                    <small>
-                      Include this provider
-                      in API routing.
-                    </small>
-                  </span>
-                </label>
+                </FormField>
               </div>
 
-              <div className="modal-footer">
+              <div className="api-form-section">
+                <div className="api-form-section-title">
+                  <span>02</span>
+                  Authentication
+                </div>
+
+                <FormField label="API Key">
+                  <div className="api-input-with-icon">
+                    <KeyRound size={17} />
+                    <input
+                      type="password"
+                      value={form.apiKey}
+                      onChange={(event) =>
+                        updateForm("apiKey", event.target.value)
+                      }
+                      placeholder="Enter API key"
+                      autoComplete="off"
+                    />
+                  </div>
+                </FormField>
+
+                <div className="api-form-grid two">
+                  <FormField label="Request Method">
+                    <div className="api-select">
+                      <select
+                        value={form.method}
+                        onChange={(event) =>
+                          updateForm("method", event.target.value)
+                        }
+                      >
+                        <option>GET</option>
+                        <option>POST</option>
+                      </select>
+
+                      <ChevronDown size={16} />
+                    </div>
+                  </FormField>
+
+                  <FormField label="Priority">
+                    <input
+                      type="number"
+                      min="1"
+                      value={form.priority}
+                      onChange={(event) =>
+                        updateForm(
+                          "priority",
+                          Math.max(1, Number(event.target.value) || 1)
+                        )
+                      }
+                    />
+                  </FormField>
+                </div>
+              </div>
+
+              <div className="api-form-section">
+                <div className="api-form-section-title">
+                  <span>03</span>
+                  Request Configuration
+                </div>
+
+                <div className="api-form-grid two">
+                  <FormField label="Headers">
+                    <textarea
+                      value={form.headers}
+                      onChange={(event) =>
+                        updateForm("headers", event.target.value)
+                      }
+                      placeholder={"Authorization: Bearer YOUR_TOKEN\nAccept: application/json"}
+                    />
+                    <small>One header per line: Name: Value</small>
+                  </FormField>
+
+                  <FormField label="Query Parameters">
+                    <textarea
+                      value={form.params}
+                      onChange={(event) =>
+                        updateForm("params", event.target.value)
+                      }
+                      placeholder="language=en-US&page=1"
+                    />
+                    <small>Example: key=value&amp;page=1</small>
+                  </FormField>
+                </div>
+              </div>
+
+              <div className="api-form-section">
+                <div className="api-form-section-title">
+                  <span>04</span>
+                  Routing
+                </div>
+
+                <div className="api-toggle-row">
+                  <div>
+                    <strong>Enable provider</strong>
+                    <span>
+                      Allow the application to use this provider for requests.
+                    </span>
+                  </div>
+
+                  <button
+                    type="button"
+                    className={`api-toggle ${form.enabled ? "on" : ""}`}
+                    onClick={() => updateForm("enabled", !form.enabled)}
+                    aria-label="Toggle provider"
+                  >
+                    <span />
+                  </button>
+                </div>
+
+                <div className="api-toggle-row">
+                  <div>
+                    <strong>Primary provider</strong>
+                    <span>
+                      Use this source as the preferred data provider.
+                    </span>
+                  </div>
+
+                  <button
+                    type="button"
+                    className={`api-toggle ${form.primary ? "on" : ""}`}
+                    onClick={() => updateForm("primary", !form.primary)}
+                    aria-label="Toggle primary provider"
+                  >
+                    <span />
+                  </button>
+                </div>
+              </div>
+
+              <div className="api-form-note">
+                <ShieldCheck size={17} />
+
+                <span>
+                  Browser-side requests only work when the provider permits
+                  CORS. For protected APIs, use a server-side Worker/proxy and
+                  keep secret keys out of client-side code.
+                </span>
+              </div>
+
+              <div className="api-modal-footer">
                 <button
                   type="button"
-                  className="admin-btn admin-btn-secondary"
+                  className="api-secondary-button"
                   onClick={closeModal}
                 >
                   Cancel
                 </button>
 
-                <button
-                  type="submit"
-                  className="admin-btn admin-btn-primary"
-                >
-                  <Save size={17} />
-
-                  {editingId
-                    ? "Save Changes"
-                    : "Add Provider"}
+                <button type="submit" className="api-primary-button">
+                  <Check size={17} />
+                  {editingId ? "Save Changes" : "Create Provider"}
                 </button>
               </div>
             </form>
@@ -798,70 +989,29 @@ export default function ApiProviders() {
   );
 }
 
-function StatCard({
-  icon,
-  label,
-  value,
-}) {
+function StatCard({ icon, label, value, detail }) {
   return (
-    <div className="provider-stat">
-      <div className="provider-stat-icon">
-        {icon}
-      </div>
+    <div className="api-stat-card">
+      <div className="api-stat-icon">{icon}</div>
 
-      <div>
+      <div className="api-stat-content">
         <span>{label}</span>
         <strong>{value}</strong>
+        <small>{detail}</small>
       </div>
     </div>
   );
 }
 
-function StatusBadge({ enabled }) {
+function FormField({ label, required, children }) {
   return (
-    <span
-      className={`status-badge ${
-        enabled ? "active" : "inactive"
-      }`}
-    >
-      <span />
+    <label className="api-field">
+      <span>
+        {label}
+        {required && <em>*</em>}
+      </span>
 
-      {enabled ? "Active" : "Disabled"}
-    </span>
-  );
-}
-
-function FormField({
-  label,
-  name,
-  value,
-  onChange,
-  placeholder,
-  type = "text",
-  icon,
-  full,
-  min,
-}) {
-  return (
-    <div
-      className={`form-field ${
-        full ? "form-full" : ""
-      }`}
-    >
-      <label>{label}</label>
-
-      <div className="input-wrap">
-        {icon}
-
-        <input
-          type={type}
-          name={name}
-          value={value}
-          onChange={onChange}
-          placeholder={placeholder}
-          min={min}
-        />
-      </div>
-    </div>
+      {children}
+    </label>
   );
 }
